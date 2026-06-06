@@ -1,0 +1,14 @@
+# wrangler.toml — Cloudflare Pages + Functions + KV
+#
+# IMPORTANT: fill the KV namespace ids before deploying.
+# Get them by running:
+#   npx wrangler kv namespace create NAV_KV
+#   npx wrangler kv namespace create NAV_KV --preview
+name = "mao_nav"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "dist"
+
+[[kv_namespaces]]
+binding = "NAV_KV"
+id = "<PRODUCTION_KV_NAMESPACE_ID>"
+preview_id = "<PREVIEW_KV_NAMESPACE_ID>"
