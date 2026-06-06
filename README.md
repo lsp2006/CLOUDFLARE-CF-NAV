@@ -1,4 +1,4 @@
-# 猫猫导航 mao_nav
+# CLOUDFLARE-CF_nav
 
 > 一个极简美观的个人导航站,数据存储在 Cloudflare KV,后台编辑秒级生效,完全脱离 GitHub API。
 
