@@ -169,12 +169,27 @@
             class="category-section"
             :id="`category-${category.id}`"
           >
-            <h2 class="category-title">
+            <button
+              type="button"
+              class="category-title"
+              :class="{ 'is-collapsed': isCollapsed(category.id) }"
+              :aria-expanded="!isCollapsed(category.id)"
+              :aria-controls="`category-grid-${category.id}`"
+              @click="toggleCategory(category.id)"
+            >
               <span class="category-icon">{{ category.icon }}</span>
               <span class="category-name">{{ category.name }}</span>
-            </h2>
+              <span class="category-count">{{ category.sites.length }}</span>
+              <svg class="category-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
 
-            <div class="sites-grid">
+            <div
+              v-show="!isCollapsed(category.id)"
+              :id="`category-grid-${category.id}`"
+              class="sites-grid"
+            >
               <a
                 v-for="site in category.sites"
                 :key="site.id"
@@ -182,6 +197,12 @@
                 target="_blank"
                 rel="noopener noreferrer"
                 class="site-card"
+                @click="onSiteClick"
+                @touchstart.passive="startPress(site)"
+                @touchend="cancelPress"
+                @touchmove="cancelPress"
+                @touchcancel="cancelPress"
+                @contextmenu.prevent
               >
                 <div class="site-icon">
                   <img :src="site.icon" :alt="site.name" @error="handleImageError" />
@@ -199,6 +220,39 @@
 
     <!-- 主题快捷面板（右上角浮动） -->
     <ThemePanel />
+
+    <!-- 移动端长按浮动提示 -->
+    <Teleport to="body">
+      <Transition name="tooltip">
+        <div
+          v-if="tooltipSite"
+          class="site-tooltip-overlay"
+          @click="hideTooltip"
+          @touchstart.passive="hideTooltip"
+        >
+          <div class="site-tooltip" @click.stop @touchstart.stop.passive>
+            <div class="tooltip-icon">
+              <img :src="tooltipSite.icon" :alt="tooltipSite.name" @error="handleImageError" />
+            </div>
+            <h3 class="tooltip-name">{{ tooltipSite.name }}</h3>
+            <p class="tooltip-desc">{{ tooltipSite.description || '暂无说明' }}</p>
+            <div class="tooltip-url">{{ tooltipSite.url }}</div>
+            <div class="tooltip-actions">
+              <button type="button" class="tooltip-btn tooltip-btn-ghost" @click="hideTooltip">关闭</button>
+              <a
+                class="tooltip-btn tooltip-btn-primary"
+                :href="tooltipSite.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                @click="hideTooltip"
+              >
+                访问 →
+              </a>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -247,6 +301,81 @@ const isUnlocked = ref(false)
 const unlockPassword = ref('')
 const unlocking = ref(false)
 const unlockError = ref('')
+
+/* ── Mobile accordion state ──────────────────────────────────
+ * Persisted in localStorage under COLLAPSED_KEY. On the very
+ * first mobile visit (no stored value), every category starts
+ * collapsed — that's the whole point of this redesign. Search
+ * temporarily overrides the collapsed state without persisting. */
+const COLLAPSED_KEY = 'mao_nav_collapsed_cats'
+const isMobile = ref(false)
+const collapsedSet = ref(new Set())
+let mediaQuery = null
+
+function persistCollapsed() {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsedSet.value]))
+  } catch { /* quota or private mode — ignore */ }
+}
+
+function isCollapsed(catId) {
+  if (!isMobile.value) return false
+  if (filterQuery.value.trim()) return false
+  return collapsedSet.value.has(catId)
+}
+
+function toggleCategory(catId) {
+  if (!isMobile.value) return
+  const next = new Set(collapsedSet.value)
+  next.has(catId) ? next.delete(catId) : next.add(catId)
+  collapsedSet.value = next
+  persistCollapsed()
+}
+
+function ensureExpanded(catId) {
+  if (!collapsedSet.value.has(catId)) return
+  const next = new Set(collapsedSet.value)
+  next.delete(catId)
+  collapsedSet.value = next
+  persistCollapsed()
+}
+
+/* ── Long-press tooltip state ────────────────────────────────
+ * Mobile only. Touch-hold for 500ms pops a centered card with
+ * full site info; suppressClick blocks the default <a> navigation
+ * that would otherwise fire on touchend → click. */
+const tooltipSite = ref(null)
+let pressTimer = null
+let suppressNextClick = false
+
+function startPress(site) {
+  if (!isMobile.value) return
+  suppressNextClick = false
+  cancelPress()
+  pressTimer = setTimeout(() => {
+    suppressNextClick = true
+    tooltipSite.value = site
+    try { navigator.vibrate?.(15) } catch { /* ignore */ }
+  }, 500)
+}
+
+function cancelPress() {
+  if (pressTimer) {
+    clearTimeout(pressTimer)
+    pressTimer = null
+  }
+}
+
+function onSiteClick(e) {
+  if (suppressNextClick) {
+    e.preventDefault()
+    suppressNextClick = false
+  }
+}
+
+function hideTooltip() {
+  tooltipSite.value = null
+}
 
 /** @type {import('vue').ComputedRef<import('../apis/dataClient.js').Category[]>} */
 const filteredCategories = computed(() => {
@@ -448,6 +577,8 @@ const closeMobileMenu = () => {
 // 移动端分类滚动
 const scrollToCategoryMobile = (categoryId) => {
   closeMobileMenu() // 先关闭菜单
+  // 折叠状态下先展开目标分类，否则滚动后用户什么都看不到
+  ensureExpanded(categoryId)
 
   // 稍微延迟一下再滚动，确保菜单关闭动画完成
   setTimeout(() => {
@@ -455,13 +586,41 @@ const scrollToCategoryMobile = (categoryId) => {
   }, 200)
 }
 
+function syncIsMobile(e) {
+  isMobile.value = e.matches
+}
+
+function hydrateCollapsed() {
+  let stored = null
+  try { stored = localStorage.getItem(COLLAPSED_KEY) } catch { /* ignore */ }
+  if (stored != null) {
+    try {
+      const arr = JSON.parse(stored)
+      if (Array.isArray(arr)) collapsedSet.value = new Set(arr)
+    } catch { /* corrupted — ignore */ }
+    return
+  }
+  // First visit on mobile: collapse everything that exists. If categories
+  // haven't loaded yet, the watcher below will run when they arrive.
+  if (isMobile.value && categories.value.length) {
+    collapsedSet.value = new Set(categories.value.map(c => c.id))
+    persistCollapsed()
+  }
+}
+
 onMounted(async () => {
   checkLockStatus()
+  mediaQuery = window.matchMedia('(max-width: 768px)')
+  isMobile.value = mediaQuery.matches
+  mediaQuery.addEventListener('change', syncIsMobile)
+  hydrateCollapsed()
   try {
     await Promise.all([navStore.fetch(), settings.fetch()])
   } catch (err) {
     console.error('Failed to load:', err)
   }
+  // Re-run hydration once categories are populated, in case storage was empty.
+  hydrateCollapsed()
   applySkin(settings.skinId)
   // Auto-fetch Bing wallpaper if user selected that option
   if (settings.bgType === 'bing' && !settings.bgUrl) {
@@ -489,6 +648,8 @@ watch(() => settings.skinId, (id) => applySkin(id))
 onUnmounted(() => {
   document.body.style.overflow = ''
   window.removeEventListener('keydown', onKeyDown)
+  if (mediaQuery) mediaQuery.removeEventListener('change', syncIsMobile)
+  cancelPress()
 })
 </script>
 
@@ -842,13 +1003,46 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+  width: 100%;
   font-size: 22px;
   font-weight: 700;
   color: var(--mao-text);
   margin-bottom: var(--space-lg);
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: default;
+  font-family: inherit;
+}
+.category-title:focus-visible {
+  outline: 2px solid var(--mao-primary);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
 }
 .category-title .category-icon { font-size: 26px; }
 .category-title .category-name { font-size: 22px; }
+.category-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  background: var(--mao-primary-soft);
+  color: var(--mao-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+.category-chevron {
+  margin-left: auto;
+  color: var(--mao-text-muted);
+  transition: transform var(--transition-normal);
+  display: none;
+}
+.category-title.is-collapsed .category-chevron { transform: rotate(-90deg); }
 
 /* ── Site cards grid ────────────────────────────────────────── */
 .sites-grid {
@@ -1025,9 +1219,139 @@ onUnmounted(() => {
   .content-area { padding: var(--space-md); }
   .sites-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
   .categories-container { gap: var(--space-xl); }
+
+  /* Accordion: title becomes the clickable trigger */
+  .category-title {
+    cursor: pointer;
+    padding: 14px var(--space-md);
+    margin-bottom: var(--space-md);
+    background: var(--mao-surface);
+    border: 1px solid var(--mao-border-light);
+    border-radius: var(--radius-md);
+    box-shadow: var(--mao-shadow-sm);
+    font-size: 17px;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .category-title:hover,
+  .category-title:active { background: var(--mao-primary-soft); border-color: var(--mao-primary); }
+  .category-title .category-icon { font-size: 22px; }
+  .category-title .category-name { font-size: 16px; flex: 1; min-width: 0; }
+  .category-chevron { display: block; }
+  .category-title.is-collapsed { margin-bottom: 0; }
 }
 @media (max-width: 480px) {
-  .sites-grid { grid-template-columns: 1fr; }
-  .site-card { padding: var(--space-sm) var(--space-md); }
+  .sites-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-sm);
+  }
+  .site-card {
+    padding: 10px;
+    gap: 10px;
+    border-radius: var(--radius-md);
+  }
+  .site-card .site-icon { width: 36px; height: 36px; }
+  .site-card .site-icon img { width: 22px; height: 22px; }
+  .site-card .site-name { font-size: 14px; margin-bottom: 2px; }
+  .site-card .site-description {
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
+
+/* ── Long-press tooltip (mobile) ────────────────────────────── */
+.site-tooltip-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.site-tooltip {
+  width: 100%;
+  max-width: 320px;
+  padding: var(--space-lg);
+  background: var(--mao-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--mao-shadow-xl);
+  text-align: center;
+}
+.site-tooltip .tooltip-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto var(--space-sm);
+  border-radius: var(--radius-md);
+  background: var(--mao-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.site-tooltip .tooltip-icon img { width: 36px; height: 36px; object-fit: contain; }
+.site-tooltip .tooltip-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--mao-text);
+  margin: 0 0 6px;
+}
+.site-tooltip .tooltip-desc {
+  font-size: 13px;
+  color: var(--mao-text-secondary);
+  margin: 0 0 var(--space-sm);
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-word;
+}
+.site-tooltip .tooltip-url {
+  font-size: 11px;
+  color: var(--mao-text-muted);
+  margin-bottom: var(--space-md);
+  word-break: break-all;
+  padding: 6px 8px;
+  background: var(--mao-bg);
+  border-radius: var(--radius-sm);
+}
+.tooltip-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+.tooltip-btn {
+  flex: 1;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast);
+}
+.tooltip-btn-ghost { background: var(--mao-bg); color: var(--mao-text-secondary); }
+.tooltip-btn-ghost:hover { background: var(--mao-border-light); }
+.tooltip-btn-primary { background: var(--mao-primary); color: #fff; }
+.tooltip-btn-primary:hover { background: var(--mao-primary-hover); }
+
+.tooltip-enter-active,
+.tooltip-leave-active { transition: opacity var(--transition-fast); }
+.tooltip-enter-active .site-tooltip,
+.tooltip-leave-active .site-tooltip { transition: transform var(--transition-normal); }
+.tooltip-enter-from,
+.tooltip-leave-to { opacity: 0; }
+.tooltip-enter-from .site-tooltip,
+.tooltip-leave-to .site-tooltip { transform: scale(0.92); }
 </style>
